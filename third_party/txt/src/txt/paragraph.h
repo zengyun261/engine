@@ -73,11 +73,19 @@ class Paragraph {
   struct Range {
     Range() : start(), end() {}
     Range(T s, T e) : start(s), end(e) {}
+
     T start, end;
+
     bool operator==(const Range<T>& other) const {
       return start == other.start && end == other.end;
     }
+
     T width() { return end - start; }
+
+    void Shift(T delta) {
+      start += delta;
+      end += delta;
+    }
   };
 
   // Minikin Layout doLayout() and LineBreaker addStyleRun() has an
@@ -260,6 +268,8 @@ class Paragraph {
                 size_t line,
                 const SkPaint::FontMetrics& metrics,
                 TextDirection dir);
+
+    void Shift(double delta);
   };
 
   // Holds the laid out x positions of each glyph.
@@ -312,6 +322,13 @@ class Paragraph {
 
   // Draws the background onto the canvas.
   void PaintBackground(SkCanvas* canvas, const PaintRecord& record);
+
+  // Obtain a Minikin font collection matching this text style.
+  std::shared_ptr<minikin::FontCollection> GetMinikinFontCollectionForStyle(
+      const TextStyle& style);
+
+  // Get a default SkTypeface for a text style.
+  sk_sp<SkTypeface> GetDefaultSkiaTypeface(const TextStyle& style);
 
   FXL_DISALLOW_COPY_AND_ASSIGN(Paragraph);
 };

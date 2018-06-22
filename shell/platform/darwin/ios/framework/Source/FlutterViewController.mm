@@ -22,6 +22,12 @@
 #include "flutter/shell/platform/darwin/ios/platform_view_ios.h"
 
 @interface FlutterViewController () <FlutterTextInputDelegate>
+@property(nonatomic, readonly) NSMutableDictionary* pluginPublications;
+@end
+
+@interface FlutterViewControllerRegistrar : NSObject <FlutterPluginRegistrar>
+- (instancetype)initWithPlugin:(NSString*)pluginKey
+         flutterViewController:(FlutterViewController*)flutterViewController;
 @end
 
 @implementation FlutterViewController {
@@ -93,6 +99,8 @@
   if ([self setupShell]) {
     [self setupChannels];
     [self setupNotificationCenterObservers];
+
+    _pluginPublications = [NSMutableDictionary new];
   }
 }
 
@@ -159,18 +167,6 @@
     return false;
   }
 
-  // Launch the Dart application with the inferred run configuration.
-  _shell->GetTaskRunners().GetUITaskRunner()->PostTask(
-      fxl::MakeCopyable([engine = _shell->GetEngine(),                   //
-                         config = [_dartProject.get() runConfiguration]  //
-  ]() mutable {
-        if (engine) {
-          auto result = engine->Run(std::move(config));
-          if (!result) {
-            FXL_LOG(ERROR) << "Could not launch engine with configuration.";
-          }
-        }
-      }));
   return true;
 }
 
@@ -390,6 +386,20 @@
 
 - (void)viewWillAppear:(BOOL)animated {
   TRACE_EVENT0("flutter", "viewWillAppear");
+
+  // Launch the Dart application with the inferred run configuration.
+  _shell->GetTaskRunners().GetUITaskRunner()->PostTask(
+      fxl::MakeCopyable([engine = _shell->GetEngine(),                   //
+                         config = [_dartProject.get() runConfiguration]  //
+  ]() mutable {
+        if (engine) {
+          auto result = engine->Run(std::move(config));
+          if (!result) {
+            FXL_LOG(ERROR) << "Could not launch engine with configuration.";
+          }
+        }
+      }));
+
   // Only recreate surface on subsequent appearances when viewport metrics are known.
   // First time surface creation is done on viewDidLayoutSubviews.
   if (_viewportMetrics.physical_width)
@@ -426,6 +436,7 @@
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [_pluginPublications release];
   [super dealloc];
 }
 
@@ -969,6 +980,84 @@ constexpr CGFloat kStandardStatusBarHeight = 20.0;
 
 - (NSString*)lookupKeyForAsset:(NSString*)asset fromPackage:(NSString*)package {
   return [FlutterDartProject lookupKeyForAsset:asset fromPackage:package];
+}
+
+- (id<FlutterPluginRegistry>)pluginRegistry {
+  return self;
+}
+
+#pragma mark - FlutterPluginRegistry
+
+- (NSObject<FlutterPluginRegistrar>*)registrarForPlugin:(NSString*)pluginKey {
+  NSAssert(self.pluginPublications[pluginKey] == nil, @"Duplicate plugin key: %@", pluginKey);
+  self.pluginPublications[pluginKey] = [NSNull null];
+  return
+      [[FlutterViewControllerRegistrar alloc] initWithPlugin:pluginKey flutterViewController:self];
+}
+
+- (BOOL)hasPlugin:(NSString*)pluginKey {
+  return _pluginPublications[pluginKey] != nil;
+}
+
+- (NSObject*)valuePublishedByPlugin:(NSString*)pluginKey {
+  return _pluginPublications[pluginKey];
+}
+@end
+
+@implementation FlutterViewControllerRegistrar {
+  NSString* _pluginKey;
+  FlutterViewController* _flutterViewController;
+}
+
+- (instancetype)initWithPlugin:(NSString*)pluginKey
+         flutterViewController:(FlutterViewController*)flutterViewController {
+  self = [super init];
+  NSAssert(self, @"Super init cannot be nil");
+  _pluginKey = [pluginKey retain];
+  _flutterViewController = [flutterViewController retain];
+  return self;
+}
+
+- (void)dealloc {
+  [_pluginKey release];
+  [_flutterViewController release];
+  [super dealloc];
+}
+
+- (NSObject<FlutterBinaryMessenger>*)messenger {
+  return _flutterViewController;
+}
+
+- (NSObject<FlutterTextureRegistry>*)textures {
+  return _flutterViewController;
+}
+
+- (void)publish:(NSObject*)value {
+  _flutterViewController.pluginPublications[_pluginKey] = value;
+}
+
+- (void)addMethodCallDelegate:(NSObject<FlutterPlugin>*)delegate
+                      channel:(FlutterMethodChannel*)channel {
+  [channel setMethodCallHandler:^(FlutterMethodCall* call, FlutterResult result) {
+    [delegate handleMethodCall:call result:result];
+  }];
+}
+
+- (void)addApplicationDelegate:(NSObject<FlutterPlugin>*)delegate {
+  id<UIApplicationDelegate> appDelegate = [[UIApplication sharedApplication] delegate];
+  if ([appDelegate conformsToProtocol:@protocol(FlutterAppLifeCycleProvider)]) {
+    id<FlutterAppLifeCycleProvider> lifeCycleProvider =
+        (id<FlutterAppLifeCycleProvider>)appDelegate;
+    [lifeCycleProvider addApplicationLifeCycleDelegate:delegate];
+  }
+}
+
+- (NSString*)lookupKeyForAsset:(NSString*)asset {
+  return [_flutterViewController lookupKeyForAsset:asset];
+}
+
+- (NSString*)lookupKeyForAsset:(NSString*)asset fromPackage:(NSString*)package {
+  return [_flutterViewController lookupKeyForAsset:asset fromPackage:package];
 }
 
 @end

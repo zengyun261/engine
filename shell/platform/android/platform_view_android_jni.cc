@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "flutter/assets/directory_asset_bundle.h"
+#include "flutter/assets/zip_asset_store.h"
 #include "flutter/common/settings.h"
 #include "flutter/fml/file.h"
 #include "flutter/fml/platform/android/jni_util.h"
@@ -173,10 +174,10 @@ std::unique_ptr<IsolateConfiguration> CreateIsolateConfiguration(
   const auto configuration_from_blob =
       [&asset_manager](const std::string& snapshot_name)
       -> std::unique_ptr<IsolateConfiguration> {
-    std::vector<uint8_t> blob;
-    if (asset_manager.GetAsBuffer(snapshot_name, &blob)) {
-      return IsolateConfiguration::CreateForSnapshot(
-          std::make_unique<fml::DataMapping>(std::move(blob)));
+    std::unique_ptr<fml::Mapping> blob =
+        asset_manager.GetAsMapping(snapshot_name);
+    if (blob) {
+      return IsolateConfiguration::CreateForSnapshot(std::move(blob));
     }
     return nullptr;
   };
@@ -207,9 +208,15 @@ static void RunBundleAndSnapshot(
 
   if (bundlepath.size() > 0) {
     // If we got a bundle path, attempt to use that as a directory asset
-    // bundle.
-    asset_manager->PushBack(std::make_unique<blink::DirectoryAssetBundle>(
-        fml::OpenFile(bundlepath.c_str(), fml::OpenPermission::kRead, true)));
+    // bundle or a zip asset bundle.
+    const auto file_ext_index = bundlepath.rfind(".");
+    if (bundlepath.substr(file_ext_index) == ".zip") {
+      asset_manager->PushBack(
+          std::make_unique<blink::ZipAssetStore>(bundlepath));
+    } else {
+      asset_manager->PushBack(std::make_unique<blink::DirectoryAssetBundle>(
+          fml::OpenFile(bundlepath.c_str(), fml::OpenPermission::kRead, true)));
+    }
 
     // Use the last path component of the bundle path to determine the
     // directory in the APK assets.
@@ -325,17 +332,18 @@ static void SetViewportMetrics(JNIEnv* env,
                                jint physicalViewInsetBottom,
                                jint physicalViewInsetLeft) {
   const blink::ViewportMetrics metrics = {
-      .device_pixel_ratio = devicePixelRatio,
-      .physical_width = physicalWidth,
-      .physical_height = physicalHeight,
-      .physical_padding_top = physicalPaddingTop,
-      .physical_padding_right = physicalPaddingRight,
-      .physical_padding_bottom = physicalPaddingBottom,
-      .physical_padding_left = physicalPaddingLeft,
-      .physical_view_inset_top = physicalViewInsetTop,
-      .physical_view_inset_right = physicalViewInsetRight,
-      .physical_view_inset_bottom = physicalViewInsetBottom,
-      .physical_view_inset_left = physicalViewInsetLeft,
+      .device_pixel_ratio = static_cast<double>(devicePixelRatio),
+      .physical_width = static_cast<double>(physicalWidth),
+      .physical_height = static_cast<double>(physicalHeight),
+      .physical_padding_top = static_cast<double>(physicalPaddingTop),
+      .physical_padding_right = static_cast<double>(physicalPaddingRight),
+      .physical_padding_bottom = static_cast<double>(physicalPaddingBottom),
+      .physical_padding_left = static_cast<double>(physicalPaddingLeft),
+      .physical_view_inset_top = static_cast<double>(physicalViewInsetTop),
+      .physical_view_inset_right = static_cast<double>(physicalViewInsetRight),
+      .physical_view_inset_bottom =
+          static_cast<double>(physicalViewInsetBottom),
+      .physical_view_inset_left = static_cast<double>(physicalViewInsetLeft),
   };
 
   ANDROID_SHELL_HOLDER->SetViewportMetrics(metrics);

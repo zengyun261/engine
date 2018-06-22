@@ -205,8 +205,7 @@ public final class FlutterActivityDelegate
         Application app = (Application) activity.getApplicationContext();
         if (app instanceof FlutterApplication) {
             FlutterApplication flutterApp = (FlutterApplication) app;
-            if (this.equals(flutterApp.getCurrentActivity())) {
-                Log.i(TAG, "onPause setting current activity to null");
+            if (activity.equals(flutterApp.getCurrentActivity())) {
                 flutterApp.setCurrentActivity(null);
             }
         }
@@ -227,10 +226,7 @@ public final class FlutterActivityDelegate
         Application app = (Application) activity.getApplicationContext();
         if (app instanceof FlutterApplication) {
             FlutterApplication flutterApp = (FlutterApplication) app;
-            Log.i(TAG, "onResume setting current activity to this");
             flutterApp.setCurrentActivity(activity);
-        } else {
-            Log.i(TAG, "onResume app wasn't a FlutterApplication!!");
         }
     }
 
@@ -251,8 +247,7 @@ public final class FlutterActivityDelegate
         Application app = (Application) activity.getApplicationContext();
         if (app instanceof FlutterApplication) {
             FlutterApplication flutterApp = (FlutterApplication) app;
-            if (this.equals(flutterApp.getCurrentActivity())) {
-                Log.i(TAG, "onDestroy setting current activity to null");
+            if (activity.equals(flutterApp.getCurrentActivity())) {
                 flutterApp.setCurrentActivity(null);
             }
         }
@@ -327,6 +322,9 @@ public final class FlutterActivityDelegate
         if (intent.getBooleanExtra("trace-skia", false)) {
             args.add("--trace-skia");
         }
+        if (intent.getBooleanExtra("verbose-logging", false)) {
+            args.add("--verbose-logging");
+        }
         if (!args.isEmpty()) {
             String[] argsArray = new String[args.size()];
             return args.toArray(argsArray);
@@ -353,7 +351,7 @@ public final class FlutterActivityDelegate
                 flutterView.setInitialRoute(route);
             }
             if (!flutterView.getFlutterNativeView().isApplicationRunning()) {
-                flutterView.runFromBundle(appBundlePath, intent.getStringExtra("snapshot"), "main", reuseIsolate);
+                flutterView.runFromBundle(appBundlePath, null, "main", reuseIsolate);
             }
             return true;
         }

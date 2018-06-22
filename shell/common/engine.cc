@@ -36,8 +36,9 @@ static constexpr char kLocalizationChannel[] = "flutter/localization";
 static constexpr char kSettingsChannel[] = "flutter/settings";
 
 Engine::Engine(Delegate& delegate,
-               const blink::DartVM& vm,
+               blink::DartVM& vm,
                fxl::RefPtr<blink::DartSnapshot> isolate_snapshot,
+               fxl::RefPtr<blink::DartSnapshot> shared_snapshot,
                blink::TaskRunners task_runners,
                blink::Settings settings,
                std::unique_ptr<Animator> animator,
@@ -54,12 +55,15 @@ Engine::Engine(Delegate& delegate,
   // object as its delegate. The delegate may be called in the constructor and
   // we want to be fully initilazed by that point.
   runtime_controller_ = std::make_unique<blink::RuntimeController>(
-      *this,                        // runtime delegate
-      &vm,                          // VM
-      std::move(isolate_snapshot),  // isolate snapshot
-      std::move(task_runners),      // task runners
-      std::move(resource_context),  // resource context
-      std::move(unref_queue)        // skia unref queue
+      *this,                                // runtime delegate
+      &vm,                                  // VM
+      std::move(isolate_snapshot),          // isolate snapshot
+      std::move(shared_snapshot),           // shared snapshot
+      std::move(task_runners),              // task runners
+      std::move(resource_context),          // resource context
+      std::move(unref_queue),               // skia unref queue
+      settings_.advisory_script_uri,        // advisory script uri
+      settings_.advisory_script_entrypoint  // advisory script entrypoint
   );
 }
 
@@ -83,9 +87,9 @@ bool Engine::UpdateAssetManager(
 
   // Using libTXT as the text engine.
   if (settings_.use_test_fonts) {
-    blink::FontCollection::ForProcess().RegisterTestFonts();
+    font_collection_.RegisterTestFonts();
   } else {
-    blink::FontCollection::ForProcess().RegisterFonts(*asset_manager_.get());
+    font_collection_.RegisterFonts(asset_manager_);
   }
 
   return true;
@@ -373,6 +377,10 @@ void Engine::HandlePlatformMessage(
   }
 }
 
+blink::FontCollection& Engine::GetFontCollection() {
+  return font_collection_;
+}
+
 void Engine::HandleAssetPlatformMessage(
     fxl::RefPtr<blink::PlatformMessage> message) {
   fxl::RefPtr<blink::PlatformMessageResponse> response = message->response();
@@ -383,12 +391,16 @@ void Engine::HandleAssetPlatformMessage(
   std::string asset_name(reinterpret_cast<const char*>(data.data()),
                          data.size());
 
-  std::vector<uint8_t> asset_data;
-  if (asset_manager_ && asset_manager_->GetAsBuffer(asset_name, &asset_data)) {
-    response->Complete(std::move(asset_data));
-  } else {
-    response->CompleteEmpty();
+  if (asset_manager_) {
+    std::unique_ptr<fml::Mapping> asset_mapping =
+        asset_manager_->GetAsMapping(asset_name);
+    if (asset_mapping) {
+      response->Complete(std::move(asset_mapping));
+      return;
+    }
   }
+
+  response->CompleteEmpty();
 }
 
 }  // namespace shell

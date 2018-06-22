@@ -33,8 +33,9 @@
 namespace blink {
 
 fml::WeakPtr<DartIsolate> DartIsolate::CreateRootIsolate(
-    const DartVM* vm,
+    DartVM* vm,
     fxl::RefPtr<DartSnapshot> isolate_snapshot,
+    fxl::RefPtr<DartSnapshot> shared_snapshot,
     TaskRunners task_runners,
     std::unique_ptr<Window> window,
     fml::WeakPtr<GrContext> resource_context,
@@ -54,6 +55,7 @@ fml::WeakPtr<DartIsolate> DartIsolate::CreateRootIsolate(
   auto root_embedder_data = std::make_unique<DartIsolate>(
       vm,                           // VM
       std::move(isolate_snapshot),  // isolate snapshot
+      std::move(shared_snapshot),   // shared snapshot
       task_runners,                 // task runners
       std::move(resource_context),  // resource context
       std::move(unref_queue),       // skia unref queue
@@ -92,8 +94,9 @@ fml::WeakPtr<DartIsolate> DartIsolate::CreateRootIsolate(
   return embedder_isolate;
 }
 
-DartIsolate::DartIsolate(const DartVM* vm,
+DartIsolate::DartIsolate(DartVM* vm,
                          fxl::RefPtr<DartSnapshot> isolate_snapshot,
+                         fxl::RefPtr<DartSnapshot> shared_snapshot,
                          TaskRunners task_runners,
                          fml::WeakPtr<GrContext> resource_context,
                          fxl::RefPtr<flow::SkiaUnrefQueue> unref_queue,
@@ -107,9 +110,11 @@ DartIsolate::DartIsolate(const DartVM* vm,
                   std::move(unref_queue),
                   advisory_script_uri,
                   advisory_script_entrypoint,
-                  vm->GetSettings().log_tag),
+                  vm->GetSettings().log_tag,
+                  vm->GetIsolateNameServer()),
       vm_(vm),
       isolate_snapshot_(std::move(isolate_snapshot)),
+      shared_snapshot_(std::move(shared_snapshot)),
       child_isolate_preparer_(std::move(child_isolate_preparer)),
       weak_factory_(std::make_unique<fml::WeakPtrFactory<DartIsolate>>(this)) {
   FXL_DCHECK(isolate_snapshot_) << "Must contain a valid isolate snapshot.";
@@ -127,7 +132,7 @@ DartIsolate::Phase DartIsolate::GetPhase() const {
   return phase_;
 }
 
-const DartVM* DartIsolate::GetDartVM() const {
+DartVM* DartIsolate::GetDartVM() const {
   return vm_;
 }
 
@@ -273,8 +278,9 @@ bool DartIsolate::PrepareForRunningFromPrecompiledCode() {
   return true;
 }
 
-static bool LoadScriptSnapshot(std::shared_ptr<const fml::Mapping> mapping,
-                               bool last_piece) {
+bool DartIsolate::LoadScriptSnapshot(
+    std::shared_ptr<const fml::Mapping> mapping,
+    bool last_piece) {
   FXL_CHECK(last_piece) << "Script snapshots cannot be divided";
   if (tonic::LogIfError(Dart_LoadScriptFromSnapshot(mapping->GetMapping(),
                                                     mapping->GetSize()))) {
@@ -283,10 +289,14 @@ static bool LoadScriptSnapshot(std::shared_ptr<const fml::Mapping> mapping,
   return true;
 }
 
-static bool LoadKernelSnapshot(std::shared_ptr<const fml::Mapping> mapping,
-                               bool last_piece) {
-  Dart_Handle library = Dart_LoadLibraryFromKernel(mapping->GetMapping(),
-                                                   mapping->GetSize());
+bool DartIsolate::LoadKernelSnapshot(
+    std::shared_ptr<const fml::Mapping> mapping,
+    bool last_piece) {
+  // Mapping must be retained until isolate shutdown.
+  kernel_buffers_.push_back(mapping);
+
+  Dart_Handle library =
+      Dart_LoadLibraryFromKernel(mapping->GetMapping(), mapping->GetSize());
   if (tonic::LogIfError(library)) {
     return false;
   }
@@ -303,8 +313,8 @@ static bool LoadKernelSnapshot(std::shared_ptr<const fml::Mapping> mapping,
   return true;
 }
 
-static bool LoadSnapshot(std::shared_ptr<const fml::Mapping> mapping,
-                         bool last_piece) {
+bool DartIsolate::LoadSnapshot(std::shared_ptr<const fml::Mapping> mapping,
+                               bool last_piece) {
   if (Dart_IsKernel(mapping->GetMapping(), mapping->GetSize())) {
     return LoadKernelSnapshot(std::move(mapping), last_piece);
   } else {
@@ -533,6 +543,7 @@ Dart_Isolate DartIsolate::DartCreateAndStartServiceIsolate(
       DartIsolate::CreateRootIsolate(
           vm.get(),                  // vm
           vm->GetIsolateSnapshot(),  // isolate snapshot
+          vm->GetSharedSnapshot(),   // shared snapshot
           null_task_runners,         // task runners
           nullptr,                   // window
           {},                        // resource context
@@ -646,7 +657,7 @@ DartIsolate::CreateDartVMAndEmbedderObjectPair(
     return {nullptr, {}};
   }
 
-  const DartVM* vm = embedder_isolate->GetDartVM();
+  DartVM* const vm = embedder_isolate->GetDartVM();
 
   if (!is_root_isolate) {
     auto raw_embedder_isolate = embedder_isolate.release();
@@ -657,6 +668,7 @@ DartIsolate::CreateDartVMAndEmbedderObjectPair(
     embedder_isolate = std::make_unique<DartIsolate>(
         vm,                                          // vm
         raw_embedder_isolate->GetIsolateSnapshot(),  // isolate_snapshot
+        raw_embedder_isolate->GetSharedSnapshot(),   // shared_snapshot
         null_task_runners,                           // task_runners
         fml::WeakPtr<GrContext>{},                   // resource_context
         nullptr,                                     // unref_queue
@@ -678,18 +690,20 @@ DartIsolate::CreateDartVMAndEmbedderObjectPair(
                 embedder_isolate.get(),                //
                 error                                  //
                 )
-          : Dart_CreateIsolate(advisory_script_uri,         //
-                               advisory_script_entrypoint,  //
-                               embedder_isolate->GetIsolateSnapshot()
-                                   ->GetData()
-                                   ->GetSnapshotPointer(),  //
-                               embedder_isolate->GetIsolateSnapshot()
-                                   ->GetInstructionsIfPresent(),  //
-                               nullptr,                           //
-                               nullptr,                           //
-                               flags,                             //
-                               embedder_isolate.get(),            //
-                               error                              //
+          : Dart_CreateIsolate(
+                advisory_script_uri,         //
+                advisory_script_entrypoint,  //
+                embedder_isolate->GetIsolateSnapshot()
+                    ->GetData()
+                    ->GetSnapshotPointer(),  //
+                embedder_isolate->GetIsolateSnapshot()
+                    ->GetInstructionsIfPresent(),                           //
+                embedder_isolate->GetSharedSnapshot()->GetDataIfPresent(),  //
+                embedder_isolate->GetSharedSnapshot()
+                    ->GetInstructionsIfPresent(),  //
+                flags,                             //
+                embedder_isolate.get(),            //
+                error                              //
             );
 
   if (isolate == nullptr) {
@@ -751,6 +765,10 @@ void DartIsolate::DartIsolateCleanupCallback(DartIsolate* embedder_isolate) {
 
 fxl::RefPtr<DartSnapshot> DartIsolate::GetIsolateSnapshot() const {
   return isolate_snapshot_;
+}
+
+fxl::RefPtr<DartSnapshot> DartIsolate::GetSharedSnapshot() const {
+  return shared_snapshot_;
 }
 
 fml::WeakPtr<DartIsolate> DartIsolate::GetWeakIsolatePtr() const {
